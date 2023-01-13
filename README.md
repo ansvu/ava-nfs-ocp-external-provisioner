@@ -1,6 +1,5 @@
 # Ava OCP NFS External Provisioner Helm Chart
-Based on Manual steps from follow link [NFS subdir external provisioner](https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner)  
-And this [nfs-subdir-helm-chart](https://artifacthub.io/packages/helm/nfs-subdir-external-provisioner/nfs-subdir-external-provisioner)
+Based on Manual steps from follow link [NFS subdir external provisioner](https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner) And this [nfs-subdir-helm-chart](https://artifacthub.io/packages/helm/nfs-subdir-external-provisioner/nfs-subdir-external-provisioner)
 
 Credits to them all! I did not modify much but just simplify by using Manual Steps from github into helm chart(less files). For Advance NFS, please follow original github and nfs helm-charts.
 
