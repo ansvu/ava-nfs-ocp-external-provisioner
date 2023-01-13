@@ -1,99 +1,183 @@
-# NFS Subdirectory External Provisioner Helm Chart
+# Ava OCP Simplify NFS External Provisioner Helm Chart
+Based on Manual steps from follow link [NFS subdir external provisioner](https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner)  
+And this [nfs-subdir-helm-chart](https://artifacthub.io/packages/helm/nfs-subdir-external-provisioner/nfs-subdir-external-provisioner)
 
-The [NFS subdir external provisioner](https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner) is an automatic provisioner for Kubernetes that uses your *already configured* NFS server, automatically creating Persistent Volumes.
-
-## TL;DR;
-
-```console
-$ helm repo add nfs-subdir-external-provisioner https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
-$ helm install nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-    --set nfs.server=x.x.x.x \
-    --set nfs.path=/exported/path
-```
-
-## Introduction
-
-This charts installs custom [storage class](https://kubernetes.io/docs/concepts/storage/storage-classes/) into a [Kubernetes](http://kubernetes.io) cluster using the [Helm](https://helm.sh) package manager. It also installs a [NFS client provisioner](https://github.com/kubernetes-sigs/nfs-subdir-external-provisioner) into the cluster which dynamically creates persistent volumes from single NFS share.
+Credits to them all! I did not modify much but just simplify by using Manual Steps from github into helm chart(less files). For Advance NFS, please follow original github and nfs helm-charts.
 
 ## Prerequisites
 
 - Kubernetes >=1.9
-- Existing NFS Share
+- Existing NFS Server and Share
+- HelmV3
+- Clone this github
+- Make sure cluster is reachable to NFS server either ipv4 or ipv6
 
-## Installing the Chart
-
-To install the chart with the release name `my-release`:
-
+## Installing the NFS Helm Chart
+### NFS Chart Structure
 ```console
-$ helm install my-release nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-    --set nfs.server=x.x.x.x \
-    --set nfs.path=/exported/path
+tree ava-ocp-nfs-external-provisioner/
+ava-ocp-nfs-external-provisioner/
+├── Chart.yaml
+├── templates
+│   ├── deployment.yaml
+│   ├── _helpers.tpl
+│   ├── rbac.yaml
+│   └── storageclass.yaml
+├── test-claim.yaml
+├── test-pod.yaml
+└── values.yaml
 ```
+### With Custom Values.yaml
+Assume to update values.yaml according to your needs and lab environment
 
-The command deploys the given storage class in the default configuration. It can be used afterwards to provision persistent volumes. The [configuration](#configuration) section lists the parameters that can be configured during installation.
+**values.yaml:**
+```yaml
+replicaCount: 1
+strategyType: Recreate
 
-> **Tip**: List all releases using `helm list`
+image:
+  repository: k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner
+  tag: v4.0.2
+  pullPolicy: IfNotPresent
+imagePullSecrets: []
+
+nfs:
+  server: 2600:52:7:76::108
+  path: /data/nfshare
+  mountOptions:
+  volumeName: nfs-client-root
+  reclaimPolicy: Retain
+
+storageClass:
+  name: ava-nfs-client-sc        
+  create: true
+  provisionerName: k8s-sigs.io/nfs-subdir-external-provisioner
+  defaultClass: true
+  allowVolumeExpansion: true
+  reclaimPolicy: Delete
+  archiveOnDelete: true
+  onDelete:
+  pathPattern:
+
+  # Set access mode - ReadWriteOnce, ReadOnlyMany or ReadWriteMany
+  accessModes: ReadWriteOnce
+
+  # Set volume bindinng mode - Immediate or WaitForFirstConsumer
+  volumeBindingMode: Immediate
+
+  # Storage class annotations
+  annotations: {}
+
+#leaderElection:
+  # When set to false leader election will be disabled
+  #  enabled: true
+
+podAnnotations: {}
+
+## Set pod priorityClassName
+# priorityClassName: ""
+
+securityContext:
+ fsGroup: 1000
+ runAsUser: 1000
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: nfs-client-provisioner
+
+resources: {}
+  # limits:
+  #  cpu: 100m
+  #  memory: 128Mi
+  # requests:
+  #  cpu: 100m
+  #  memory: 128Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Additional labels for any resource created
+labels: nfs-client-provisioner
+```
+- Create namespace 
+```console
+$ oc create ava-nfs
+```
+```console
+$ helm install ava-nfs-subdir-external-provisioner -n ava-nfs ava-ocp-nfs-external-provisioner \
+    --timeout=30s
+```
+### With Custom Values.yaml
+```console
+$ helm install ava-nfs-subdir-external-provisioner -n ava-nfs ava-ocp-nfs-external-provisioner \
+    --set nfs.server=2600:52:7:76::108 \
+    --set nfs.path=/data/nfshare \
+    --set storageClass.name=ava-nfs-sc \
+    --set storageClass.provisionerName=k8s-sigs.io/ava-ocp-nfs-external-provisioner \
+    --timeout=30s
+```
+## Create Test Claim and POD
+create-test-pod.sh:
+```bash
+#!/bin/bash
+
+# Prints all parameters to stdout, prepends with a timestamp.
+log() {
+        printf '%s %s\n' "$(date +"%Y%m%d-%H:%M:%S")" "$*"
+}
+
+# Prints all parameters and exits with the error code.
+bye() {
+        log "$*"
+        exit 1
+}
+# Checks whether files or directories exist.
+file_exists() {
+        [ -z "${1-}" ] && bye Usage: file_exists name.
+        ls "$1" >/dev/null 2>&1
+}
+#############################################################
+NameSpace=$1
+
+#check if ava-ocp-nfs-external-provisioner/ chart dir existed#
+if [[ ! -d ava-ocp-nfs-external-provisioner ]]; then
+     log "INFO: ava-ocp-nfs-external-provisioner chart directory is not existed!"
+     exit 1
+fi
+
+if [[ $NameSpace == "" ]]; then
+     NameSpace="test-claim-pvc"
+fi
+
+StorageClassName=$(cat ava-ocp-nfs-external-provisioner/values.yaml|awk '/storageClass/{getline; print}'| awk '{print $2}')
+oc get ns | grep -w "$NameSpace" >/dev/null 2>&1
+if [ $? -eq 1 ]; then
+    log INFO: $NameSpace is not created yet, start creating it now...
+    oc create ns "$NameSpace"
+fi
+
+sed -i'' "s/storageClassName:.*/storageClassName: $StorageClassName/g" ava-ocp-nfs-external-provisioner/test-claim.yaml
+
+# Create test-claim and test-pod
+oc apply -f ava-ocp-nfs-external-provisioner/test-claim.yaml
+oc apply -f ava-ocp-nfs-external-provisioner/test-pod.yaml
+oc -n $NameSpace get pvc,pod
+```
+- Start Create Test Claim and POD
+```shellSession
+$ bash create-test-pod.sh test-namespace
+or
+$ bash create-test-pod.sh
+```
+Note: if namespace is not provided then it create default namespace: test-claim-pvc automatic
 
 ## Uninstalling the Chart
 
-To uninstall/delete the `my-release` deployment:
+To uninstall/delete the `ava-nfs-subdir-external-provisioner` deployment:
 
 ```console
-$ helm delete my-release
+$ helm uninstall ava-nfs-subdir-external-provisioner -n ava-nfs 
 ```
-
 The command removes all the Kubernetes components associated with the chart and deletes the release.
-
-## Configuration
-
-The following tables lists the configurable parameters of this chart and their default values.
-
-| Parameter                           | Description                                                                                           | Default                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| `replicaCount`                      | Number of provisioner instances to deployed                                                           | `1`                                                      |
-| `strategyType`                      | Specifies the strategy used to replace old Pods by new ones                                           | `Recreate`                                               |
-| `image.repository`                  | Provisioner image                                                                                     | `k8s.gcr.io/sig-storage/nfs-subdir-external-provisioner` |
-| `image.tag`                         | Version of provisioner image                                                                          | `v4.0.2`                                                 |
-| `image.pullPolicy`                  | Image pull policy                                                                                     | `IfNotPresent`                                           |
-| `imagePullSecrets`                  | Image pull secrets                                                                                    | `[]`                                                     |
-| `storageClass.name`                 | Name of the storageClass                                                                              | `nfs-client`                                             |
-| `storageClass.defaultClass`         | Set as the default StorageClass                                                                       | `false`                                                  |
-| `storageClass.allowVolumeExpansion` | Allow expanding the volume                                                                            | `true`                                                   |
-| `storageClass.reclaimPolicy`        | Method used to reclaim an obsoleted volume                                                            | `Delete`                                                 |
-| `storageClass.provisionerName`      | Name of the provisionerName                                                                           | null                                                     |
-| `storageClass.archiveOnDelete`      | Archive PVC when deleting                                                                             | `true`                                                   |
-| `storageClass.onDelete`             | Strategy on PVC deletion. Overrides archiveOnDelete when set to lowercase values 'delete' or 'retain' | null                                                     |
-| `storageClass.pathPattern`          | Specifies a template for the directory name                                                           | null                                                     |
-| `storageClass.accessModes`          | Set access mode for PV                                                                                | `ReadWriteOnce`                                          |
-| `storageClass.volumeBindingMode`    | Set volume binding mode for Storage Class                                                             | `Immediate`                                              |
-| `storageClass.annotations`          | Set additional annotations for the StorageClass                                                       | `{}`                                                     |
-| `leaderElection.enabled`            | Enables or disables leader election                                                                   | `true`                                                   |
-| `nfs.server`                        | Hostname of the NFS server (required)                                                                 | null (ip or hostname)                                    |
-| `nfs.path`                          | Basepath of the mount point to be used                                                                | `/nfs-storage`                                           |
-| `nfs.mountOptions`                  | Mount options (e.g. 'nfsvers=3')                                                                      | null                                                     |
-| `nfs.volumeName`                    | Volume name used inside the pods                                                                      | `nfs-subdir-external-provisioner-root`                   |
-| `nfs.reclaimPolicy`                 | Reclaim policy for the main nfs volume used for subdir provisioning                                   | `Retain`                                                 |
-| `resources`                         | Resources required (e.g. CPU, memory)                                                                 | `{}`                                                     |
-| `rbac.create`                       | Use Role-based Access Control                                                                         | `true`                                                   |
-| `podSecurityPolicy.enabled`         | Create & use Pod Security Policy resources                                                            | `false`                                                  |
-| `podAnnotations`                    | Additional annotations for the Pods                                                                   | `{}`                                                     |
-| `priorityClassName`                 | Set pod priorityClassName                                                                             | null                                                     |
-| `serviceAccount.create`             | Should we create a ServiceAccount                                                                     | `true`                                                   |
-| `serviceAccount.name`               | Name of the ServiceAccount to use                                                                     | null                                                     |
-| `serviceAccount.annotations`        | Additional annotations for the ServiceAccount                                                         | `{}`                                                     |
-| `nodeSelector`                      | Node labels for pod assignment                                                                        | `{}`                                                     |
-| `affinity`                          | Affinity settings                                                                                     | `{}`                                                     |
-| `tolerations`                       | List of node taints to tolerate                                                                       | `[]`                                                     |
-| `labels`                            | Additional labels for any resource created                                                            | `{}`                                                     |
-
-## Install Multiple Provisioners
-
-It is possible to install more than one provisioner in your cluster to have access to multiple nfs servers and/or multiple exports from a single nfs server. Each provisioner must have a different `storageClass.provisionerName` and a different `storageClass.name`. For example:
-
-```console
-helm install second-nfs-subdir-external-provisioner nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-    --set nfs.server=y.y.y.y \
-    --set nfs.path=/other/exported/path \
-    --set storageClass.name=second-nfs-client \
-    --set storageClass.provisionerName=k8s-sigs.io/second-nfs-subdir-external-provisioner
-```
